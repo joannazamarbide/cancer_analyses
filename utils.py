@@ -1,9 +1,4 @@
 # Load libraries
-from os.path import join as pjoin
-from os import listdir, getcwd
-from scipy.stats import mannwhitneyu
-from sklearn.decomposition import FastICA
-from statannotations.Annotator import Annotator
 import json
 import numpy as np
 import os
@@ -13,19 +8,33 @@ import requests
 import s3fs
 import seaborn as sns
 
+from os.path import join as pjoin
+from os import listdir, getcwd
+from scipy.stats import mannwhitneyu
+from sklearn.decomposition import FastICA
+from statannotations.Annotator import Annotator
 
-#Custom functions
+
+# Custom functions
 def compute_stats(factors:pd.DataFrame, sample_metadata:pd.DataFrame) -> pd.DataFrame: 
-    comparisons = [['Solid Tissue Normal', 'Primary Tumor'], 
-                    ['Solid Tissue Normal', 'Metastatic'],
-                    ['Primary Tumor', 'Metastatic']]
+    """
+    Compute mannwhitneyu stats on distribution of latent factors between sample types.
+
+    Args:
+        factors(pd.DataFrame): ICA patient weights (samples as rows x latents as columns)
+        sample_metadata(pd.DataFrame): sample metadata table
+
+    Returns: stats table (TODO: multiple testing correction)
+    """
+    COMPARISONS = [['Solid Tissue Normal', 'Primary Tumor'], 
+                   ['Solid Tissue Normal', 'Metastatic'],
+                   ['Primary Tumor', 'Metastatic']]
 
     full_df = factors.join(sample_metadata).reset_index().rename(columns  ={'index': 'sample_ids'})
     
     output = pd.DataFrame(columns= ['latent', 'variable', 'cor', 'pvalue'])
 
     for latent in factors.columns:
-        print(latent)
         df_latent = full_df[['sample_ids', latent, 'sample_type']]
         df_melt = df_latent.melt(id_vars = [latent,'sample_ids'],
                                  var_name = 'metadata', 
@@ -180,7 +189,17 @@ def generate_boxplot(data: pd.DataFrame, x: str = 'sample_type', y: str = 'NES',
                      order: list = ['Solid Tissue Normal', 'Primary Tumor', 'Metastatic'],
                      title: str = 'miR-361-3p signature NES in TCGA-BRCA patients'):
     """
+    Generates boxplot
 
+    Args: 
+        data(pd.DataFrame):
+        x(str):
+        y(str):
+        figsize():
+        order:
+        title:
+    
+    Returns: plot
     """
     sns.set(rc = {'figure.figsize': figsize})
     sns.set(font_scale=1)
