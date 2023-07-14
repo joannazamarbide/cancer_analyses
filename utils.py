@@ -42,7 +42,7 @@ def compute_stats(factors:pd.DataFrame, sample_metadata:pd.DataFrame) -> pd.Data
                                 "cor": u_statistic, 
                                 "pvalue": p_value})])
                 
-    return output
+    return output.sort_values(by = 'pvalue', ascending = True)
 
 
 def _download_tcga_data_files(gdc_manifest_path: str):
