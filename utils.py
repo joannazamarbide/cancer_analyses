@@ -1,7 +1,9 @@
 # Load libraries
 from os.path import join as pjoin
 from os import listdir, getcwd
-
+from scipy.stats import mannwhitneyu
+from sklearn.decomposition import FastICA
+from statannotations.Annotator import Annotator
 import json
 import numpy as np
 import os
@@ -9,8 +11,40 @@ import pandas as pd
 import re 
 import requests
 import s3fs
+import seaborn as sns
+
 
 #Custom functions
+def compute_stats(factors:pd.DataFrame, sample_metadata:pd.DataFrame) -> pd.DataFrame: 
+    comparisons = [['Solid Tissue Normal', 'Primary Tumor'], 
+                    ['Solid Tissue Normal', 'Metastatic'],
+                    ['Primary Tumor', 'Metastatic']]
+
+    full_df = factors.join(sample_metadata).reset_index().rename(columns  ={'index': 'sample_ids'})
+    
+    output = pd.DataFrame(columns= ['latent', 'variable', 'cor', 'pvalue'])
+
+    for latent in factors.columns:
+        print(latent)
+        df_latent = full_df[['sample_ids', latent, 'sample_type']]
+        df_melt = df_latent.melt(id_vars = [latent,'sample_ids'],
+                                 var_name = 'metadata', 
+                                 value_name = 'metadata_value')
+       
+        for combination in comparisons:
+            u_statistic, p_value = mannwhitneyu(df_melt[df_melt.metadata_value == combination[0]][latent], 
+                                                df_melt[df_melt.metadata_value == combination[1]][latent])
+            
+            
+            output = pd.concat([output, 
+                                pd.DataFrame({"latent": [latent], 
+                                "variable": f'{combination[0]} v {combination[1]}',
+                                "cor": u_statistic, 
+                                "pvalue": p_value})])
+                
+    return output
+
+
 def _download_tcga_data_files(gdc_manifest_path: str):
     """
     Function to download  RNAseq data from TCGA API
@@ -99,34 +133,6 @@ def _download_tcga_metadata(primary_site: str):
     return tcga_df
 
 
-def load_transcriptomics(sample_metadata: pd.DataFrame,
-                         source: str = 'gdc',
-                         gdc_manifest_path: str = listdir(getcwd())):
-    """
-    Function to load transcriptomic data ready to use
-
-    Args:
-        source(str): 'gdc' or 'api'
-        samples
-        gdc_manifest_path
-
-    Returns: pd.DataFrame with data ready to use
-    """
-    if source == 'gdc':
-        tcga_gex = pd.read_csv('EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv', sep = '\t').set_index('gene_id').rename(columns = lambda x: x[:-12])
-        tcga_df = tcga_gex[[col for col in tcga_gex.columns if col in sample_metadata.index.to_list()]]
-    
-    elif source == 'api':
-        if not [str(f).startswith('gdc_download_') for f in listdir(getcwd())]:
-            _download_tcga_data_files(gdc_manifest_path)
-        
-        tcga_df = format_tcga_rnaseq(gdc_sample_sheet = 'gdc_sample_sheet.2023-07-11.tsv', 
-                                     root_dir = 'gdc_download_20230711_113556.889465',
-                                     workflow_type = 'tpm_unstranded')
-        
-    return  tcga_df   
-
-
 def format_tcga_rnaseq(gdc_sample_sheet: str, root_dir: str,
                        workflow_type: str = 'unstranded'):
     """
@@ -169,29 +175,76 @@ def format_tcga_rnaseq(gdc_sample_sheet: str, root_dir: str,
     return tcga_df
 
 
-def get_paired_tcga_exprs(tcga_tpm: pd.DataFrame):
+def generate_boxplot(data: pd.DataFrame, x: str = 'sample_type', y: str = 'NES', 
+                     figsize = (5, 5),
+                     order: list = ['Solid Tissue Normal', 'Primary Tumor', 'Metastatic'],
+                     title: str = 'miR-361-3p signature NES in TCGA-BRCA patients'):
     """
-    Filter expression table to only keep paired samples (samples with respective adjacent/primary tumour) and drop unpaired samples
-    
+
+    """
+    sns.set(rc = {'figure.figsize': figsize})
+    sns.set(font_scale=1)
+    plt = sns.boxplot(data=data, 
+                    x=x, 
+                    y=y, 
+                    order= order )
+
+    plt.set_title(title)
+
+
+def load_transcriptomics(sample_metadata: pd.DataFrame,
+                         source: str = 'gdc',
+                         gdc_manifest_path: str = listdir(getcwd())):
+    """
+    Function to load transcriptomic data in workspace
+
     Args:
-        tcga_tpm(pd.DataFrame): Dataframe with the expression of gene(s) of interest for all cancer samples in the TCGA land. 
-                             Columns must include land_sample_type, sample_id, subject_id, gene_name, tpm, tumor_or_normal and tumor_type
+        source(str): 'gdc' or 'api'
+        samples
+        gdc_manifest_path
 
-    Returns:
-        paired: Dataframe with the expression of gene(s) of interest only for subjects with both adjacent tissue and primary tumour samples.   
-   
+    Returns: pd.DataFrame with data ready to use
     """
-    #Clean df - only keep tumour and normal and remove primary ffpe/oct samples
-    keep_columns = ['Primary Tumor', 'Solid Tissue Normal', 'Primary Blood Derived Cancer - Peripheral Blood']
-    tcga_tpm = tcga_tpm[(tcga_tpm.land_sample_type.isin(keep_columns))]
-    tcga_tpm = tcga_tpm[~tcga_tpm.sample_id.str.contains("-01B|-01C")] #drop ffpe samples
+    if source == 'gdc':
+        tcga_df = pd.read_csv('EBPlusPlusAdjustPANCAN_IlluminaHiSeq_RNASeqV2.geneExp.tsv', sep = '\t')
+        #Format
+        tcga_df['gene_id'] = tcga_df['gene_id'].str.split('|').str[0]
+        tcga_df = tcga_df[~tcga_df.gene_id.str.startswith('?')].set_index('gene_id').rename(columns = lambda x: x[:-12])
+        tcga_df = tcga_df[[col for col in tcga_df.columns if col in sample_metadata.index.to_list()]]
+    
+    elif source == 'api':
+        if not [str(f).startswith('gdc_download_') for f in listdir(getcwd())]:
+            _download_tcga_data_files(gdc_manifest_path)
+        
+        tcga_df = format_tcga_rnaseq(gdc_sample_sheet = 'gdc_sample_sheet.2023-07-11.tsv', 
+                                     root_dir = 'gdc_download_20230711_113556.889465',
+                                     workflow_type = 'tpm_unstranded')
+        
+    return  tcga_df   
 
-    #Subset relevant columns
-    all_cancers = tcga_tpm[['gene_name', 'tpm', 'subject_id', 'tumor_or_normal', 'tumor_type']]
-    
-    #Keep only paired samples - patients that have both normal and tumor samples
-    tumor_paired = all_cancers.groupby('subject_id').filter(lambda x: any(x['tumor_or_normal'] == "Tumor"))
-    paired = tumor_paired.groupby('subject_id').filter(lambda x: any(x['tumor_or_normal'] == "Normal")).drop_duplicates() 
-    
-    
-    return paired
+
+def run_ica(n_components: int, data: pd.DataFrame):
+    """
+    Function to run independent component analysis
+
+    Args:
+        n_components(int): number of components
+        data(pd.DataFrame): gex dataframe with samples as rows, genes (features) as columns
+
+    Returns: loadings (gene weights), factors (patient weights)
+    """
+    ica = FastICA(n_components = n_components, 
+                  random_state = 100, 
+                  max_iter = 300)
+
+    source_matrix = ica.fit_transform(data.T) # Reconstruct signals
+    latent_ids = ['L'+ str(i) for i in range(n_components)]
+
+    loadings = pd.DataFrame(source_matrix.T, 
+                            columns=data.columns, 
+                            index=latent_ids)
+
+    factors = pd.DataFrame(ica.mixing_, 
+                            index=data.index, 
+                            columns=latent_ids)
+    return loadings, factors
